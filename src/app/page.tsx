@@ -1,17 +1,14 @@
+import { headers } from "next/headers";
 import Link from "next/link";
 import QRCode from "qrcode";
 
 export default async function Home() {
-  let appUrl = process.env.NEXT_PUBLIC_APP_URL;
-  if (!appUrl) {
-    if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
-      appUrl = `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
-    } else if (process.env.VERCEL_URL) {
-      appUrl = `https://${process.env.VERCEL_URL}`;
-    } else {
-      appUrl = "http://127.0.0.1:3000";
-    }
-  }
+  const headersList = await headers();
+  const host = headersList.get("host");
+  const protocol = headersList.get("x-forwarded-proto") || (host?.includes("localhost") || host?.includes("127.0.0.1") ? "http" : "https");
+  
+  const appUrl = host ? `${protocol}://${host}` : (process.env.NEXT_PUBLIC_APP_URL || "http://127.0.0.1:3000");
+
   const qr = await QRCode.toDataURL(`${appUrl}/login`, {
     margin: 1,
     width: 260,
