@@ -107,17 +107,29 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
   }
 
   async function startRecording() {
-    if (!googleAvailable) return; // skip recording when no Google STT
+    if (!googleAvailable) return;
     setMessage("");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       chunks.current = [];
-      recorder.current = new MediaRecorder(stream);
-      recorder.current.ondataavailable = (event) => chunks.current.push(event.data);
+      
+      // Select supported mime type
+      let mimeType = "";
+      if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) mimeType = "audio/webm;codecs=opus";
+      else if (MediaRecorder.isTypeSupported("audio/webm")) mimeType = "audio/webm";
+      else if (MediaRecorder.isTypeSupported("audio/mp4")) mimeType = "audio/mp4";
+      
+      const options = mimeType ? { mimeType } : undefined;
+      recorder.current = new MediaRecorder(stream, options);
+      
+      recorder.current.ondataavailable = (event) => {
+        if (event.data.size > 0) chunks.current.push(event.data);
+      };
       recorder.current.onstop = () => stream.getTracks().forEach((track) => track.stop());
       recorder.current.start();
       setRecording(true);
-    } catch {
+    } catch (error) {
+      console.error("Recording error:", error);
       setMessage("❌ 無法存取麥克風，請檢查瀏覽器權限。");
     }
   }
@@ -127,10 +139,23 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
     if (!active || !item) return;
     active.stop();
     setRecording(false);
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    const blob = new Blob(chunks.current, { type: "audio/webm" });
+    
+    // Wait slightly for the last chunks
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    
+    if (chunks.current.length === 0) {
+      setMessage("❌ 錄音失敗：未擷取到語音數據。");
+      return;
+    }
+
+    const blob = new Blob(chunks.current, { type: active.mimeType });
+    if (blob.size < 100) {
+      setMessage("❌ 錄音時間太短，請按住說話。");
+      return;
+    }
+
     const form = new FormData();
-    form.append("audio", blob, "recording.webm");
+    form.append("audio", blob, "recording.audio");
     form.append("expectedText", item.traditional_text);
     const response = await fetch("/api/stt", { method: "POST", body: form });
     const result = await response.json();

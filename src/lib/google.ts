@@ -52,8 +52,6 @@ export async function transcribeCantonese(audio: Buffer, expectedText: string) {
       languageCode: "yue-HK",
       enableAutomaticPunctuation: false,
       model: "default",
-      encoding: "WEBM_OPUS",
-      sampleRateHertz: 48000,
     },
   });
 
