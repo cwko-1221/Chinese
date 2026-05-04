@@ -16,18 +16,30 @@ export default function LoginPage() {
     event.preventDefault();
     setLoading(true);
     setError("");
-    const response = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ loginId, password }),
-    });
-    const result = await response.json();
-    setLoading(false);
-    if (!response.ok) {
-      setError(result.error || "登入失敗");
-      return;
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ loginId, password }),
+      });
+      
+      let result;
+      try {
+        result = await response.json();
+      } catch (e) {
+        throw new Error(`系統錯誤 (${response.status})`);
+      }
+
+      if (!response.ok) {
+        setError(result.error || "登入失敗");
+        return;
+      }
+      router.push(result.user.role === "teacher" ? "/teacher" : "/student");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "網路錯誤，請稍後再試");
+    } finally {
+      setLoading(false);
     }
-    router.push(result.user.role === "teacher" ? "/teacher" : "/student");
   }
 
   return (
