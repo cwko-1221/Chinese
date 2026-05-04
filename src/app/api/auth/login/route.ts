@@ -14,29 +14,39 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "請輸入帳號和密碼" }, { status: 400 });
   }
 
-  const { data: user } = await db()
-    .from("ncs_users")
-    .select("id,login_id,display_name,password_hash,role")
-    .eq("login_id", body.data.loginId)
-    .maybeSingle();
+  try {
+    const { data: user, error: dbError } = await db()
+      .from("ncs_users")
+      .select("id,login_id,display_name,password_hash,role")
+      .eq("login_id", body.data.loginId)
+      .maybeSingle();
 
-  if (!user || !(await verifyPassword(body.data.password, user.password_hash))) {
-    return NextResponse.json({ error: "帳號或密碼不正確" }, { status: 401 });
-  }
+    if (dbError) {
+      console.error("Login DB Error:", dbError);
+      return NextResponse.json({ error: "資料庫查詢錯誤" }, { status: 500 });
+    }
 
-  await setSession({
-    id: user.id,
-    login_id: user.login_id,
-    display_name: user.display_name,
-    role: user.role,
-  });
+    if (!user || !user.password_hash || !(await verifyPassword(body.data.password, user.password_hash))) {
+      return NextResponse.json({ error: "帳號或密碼不正確" }, { status: 401 });
+    }
 
-  return NextResponse.json({
-    user: {
+    await setSession({
       id: user.id,
-      loginId: user.login_id,
-      displayName: user.display_name,
+      login_id: user.login_id,
+      display_name: user.display_name,
       role: user.role,
-    },
-  });
+    });
+
+    return NextResponse.json({
+      user: {
+        id: user.id,
+        loginId: user.login_id,
+        displayName: user.display_name,
+        role: user.role,
+      },
+    });
+  } catch (error) {
+    console.error("Login unexpected error:", error);
+    return NextResponse.json({ error: "伺服器發生未知的錯誤" }, { status: 500 });
+  }
 }
