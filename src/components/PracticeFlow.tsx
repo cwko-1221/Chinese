@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Mic, Volume2, Sparkles } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { SessionUser } from "@/lib/auth";
 import type { AssignmentItem, AttemptItem } from "@/lib/types";
@@ -104,10 +104,33 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
   const [message, setMessage] = useState("");
   const [recording, setRecording] = useState(false);
   const [hwDone, setHwDone] = useState(false);
-  const [googleAvailable, setGoogleAvailable] = useState(true);
+  const [sttAvailable, setSttAvailable] = useState(true);
+  const ttsAudio = useRef<HTMLAudioElement | null>(null);
+  const ttsObjectUrl = useRef<string | null>(null);
   const recorder = useRef<MediaRecorder | null>(null);
   const pcmRecorder = useRef<PcmRecorder | null>(null);
+  const recordingRequested = useRef(false);
   const chunks = useRef<Blob[]>([]);
+
+  const stopTtsPlayback = useCallback(() => {
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+
+    if (ttsAudio.current) {
+      ttsAudio.current.pause();
+      ttsAudio.current.removeAttribute("src");
+      ttsAudio.current.load();
+      ttsAudio.current = null;
+    }
+
+    if (ttsObjectUrl.current) {
+      URL.revokeObjectURL(ttsObjectUrl.current);
+      ttsObjectUrl.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => stopTtsPlayback(), [stopTtsPlayback]);
 
   useEffect(() => {
     async function load() {
@@ -148,6 +171,7 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
 
   async function playTts() {
     if (!item) return;
+    stopTtsPlayback();
     setMessage("");
 
     // Try Google TTS first
@@ -159,7 +183,6 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
 
     if (response.status === 501) {
       // Google not configured — use browser speech
-      setGoogleAvailable(false);
       browserSpeak(item.traditional_text);
       setMessage("ℹ️ 使用瀏覽器語音（Google TTS 未設定）");
       return;
@@ -172,14 +195,33 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
     }
 
     const blob = await response.blob();
-    new Audio(URL.createObjectURL(blob)).play();
+    const audioUrl = URL.createObjectURL(blob);
+    const audio = new Audio(audioUrl);
+    ttsObjectUrl.current = audioUrl;
+    ttsAudio.current = audio;
+    audio.preload = "auto";
+    audio.onended = stopTtsPlayback;
+    audio.onerror = stopTtsPlayback;
+    await audio.play().catch((error) => {
+      stopTtsPlayback();
+      console.error("TTS playback error:", error);
+      setMessage("朗讀播放失敗，請再試一次。");
+    });
   }
 
   async function startRecording() {
-    if (!googleAvailable) return;
+    if (!sttAvailable) return;
+    recordingRequested.current = true;
+    stopTtsPlayback();
+    // iOS Safari needs a short moment to release playback before getUserMedia.
+    await new Promise((resolve) => setTimeout(resolve, 150));
     setMessage("");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!recordingRequested.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       chunks.current = [];
 
       const mimeType = pickMediaRecorderMimeType();
@@ -206,6 +248,11 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
 
       const context = new AudioContextCtor();
       if (context.state === "suspended") await context.resume();
+      if (!recordingRequested.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        void context.close();
+        return;
+      }
       const source = context.createMediaStreamSource(stream);
       const processor = context.createScriptProcessor(4096, 1, 1);
       const pcmChunks: Float32Array[] = [];
@@ -227,6 +274,7 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
       };
       setRecording(true);
     } catch (error) {
+      recordingRequested.current = false;
       console.error("Recording error:", error);
       setMessage("❌ 無法存取麥克風，請檢查瀏覽器權限。");
     }
@@ -249,7 +297,7 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
     const result = await response.json();
 
     if (response.status === 501) {
-      setGoogleAvailable(false);
+      setSttAvailable(false);
       setMessage(`ℹ️ ${result.error || "Google STT 未設定，請使用下方按鈕自我評估。"}`);
       return;
     }
@@ -269,6 +317,7 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
   }
 
   async function stopRecording() {
+    recordingRequested.current = false;
     const pcmActive = pcmRecorder.current;
     if (pcmActive) {
       pcmRecorder.current = null;
@@ -464,7 +513,7 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
           <section className="mt-4 rounded-2xl bg-white/10 p-5">
             <h2 className="font-black">{phase === "practice" ? "讀音練習" : "用粵語說出答案"}</h2>
 
-            {googleAvailable ? (
+            {sttAvailable ? (
               <>
                 <button
                   onPointerDown={startRecording}
