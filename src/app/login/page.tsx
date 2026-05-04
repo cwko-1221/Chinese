@@ -26,7 +26,7 @@ export default function LoginPage() {
       let result;
       try {
         result = await response.json();
-      } catch (e) {
+      } catch {
         throw new Error(`系統錯誤 (${response.status})`);
       }
 

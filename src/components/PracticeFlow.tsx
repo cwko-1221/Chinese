@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Mic, Volume2, Sparkles } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { SessionUser } from "@/lib/auth";
 import type { AssignmentItem, AttemptItem } from "@/lib/types";
@@ -11,6 +11,74 @@ const slideVariants = {
   center: { x: 0, opacity: 1 },
   exit: { x: -60, opacity: 0 },
 };
+
+type PcmRecorder = {
+  context: AudioContext;
+  source: MediaStreamAudioSourceNode;
+  processor: ScriptProcessorNode;
+  stream: MediaStream;
+  chunks: Float32Array[];
+  sampleRate: number;
+};
+
+function pickMediaRecorderMimeType() {
+  if (typeof MediaRecorder === "undefined") return "";
+  if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) return "audio/webm;codecs=opus";
+  if (MediaRecorder.isTypeSupported("audio/webm")) return "audio/webm";
+  if (MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")) return "audio/ogg;codecs=opus";
+  return "";
+}
+
+function extensionForMimeType(mimeType: string) {
+  if (mimeType.includes("wav")) return "wav";
+  if (mimeType.includes("ogg")) return "ogg";
+  return "webm";
+}
+
+function encodeWav(samples: Float32Array, sampleRate: number) {
+  const bytesPerSample = 2;
+  const blockAlign = bytesPerSample;
+  const buffer = new ArrayBuffer(44 + samples.length * bytesPerSample);
+  const view = new DataView(buffer);
+
+  function writeString(offset: number, value: string) {
+    for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+  }
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * bytesPerSample, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);
+  writeString(36, "data");
+  view.setUint32(40, samples.length * bytesPerSample, true);
+
+  let offset = 44;
+  for (const sample of samples) {
+    const clamped = Math.max(-1, Math.min(1, sample));
+    view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
+    offset += bytesPerSample;
+  }
+
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+function mergeAudioChunks(chunks: Float32Array[]) {
+  const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const samples = new Float32Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    samples.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return samples;
+}
 
 /* ─── browser TTS fallback ─── */
 function browserSpeak(text: string) {
@@ -38,6 +106,7 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
   const [hwDone, setHwDone] = useState(false);
   const [googleAvailable, setGoogleAvailable] = useState(true);
   const recorder = useRef<MediaRecorder | null>(null);
+  const pcmRecorder = useRef<PcmRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
 
   useEffect(() => {
@@ -112,25 +181,50 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       chunks.current = [];
-      
-      // Select supported mime type
-      let mimeType = "";
-      if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) mimeType = "audio/webm;codecs=opus";
-      else if (MediaRecorder.isTypeSupported("audio/webm")) mimeType = "audio/webm";
-      else if (MediaRecorder.isTypeSupported("audio/mp4")) mimeType = "audio/mp4";
-      
-      const options = mimeType ? { mimeType } : undefined;
-      recorder.current = new MediaRecorder(stream, options);
-      
-      recorder.current.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          chunks.current.push(event.data);
-        }
+
+      const mimeType = pickMediaRecorderMimeType();
+      if (mimeType) {
+        recorder.current = new MediaRecorder(stream, { mimeType });
+        recorder.current.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            chunks.current.push(event.data);
+          }
+        };
+        recorder.current.onstop = () => stream.getTracks().forEach((track) => track.stop());
+        recorder.current.start(100);
+        setRecording(true);
+        return;
+      }
+
+      const AudioContextCtor =
+        window.AudioContext ||
+        (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextCtor) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw new Error("AudioContext is not supported.");
+      }
+
+      const context = new AudioContextCtor();
+      if (context.state === "suspended") await context.resume();
+      const source = context.createMediaStreamSource(stream);
+      const processor = context.createScriptProcessor(4096, 1, 1);
+      const pcmChunks: Float32Array[] = [];
+
+      processor.onaudioprocess = (event) => {
+        pcmChunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+        event.outputBuffer.getChannelData(0).fill(0);
       };
-      recorder.current.onstop = () => stream.getTracks().forEach((track) => track.stop());
-      
-      // Start with a timeslice to ensure data is captured regularly
-      recorder.current.start(100); 
+
+      source.connect(processor);
+      processor.connect(context.destination);
+      pcmRecorder.current = {
+        context,
+        source,
+        processor,
+        stream,
+        chunks: pcmChunks,
+        sampleRate: context.sampleRate,
+      };
       setRecording(true);
     } catch (error) {
       console.error("Recording error:", error);
@@ -138,33 +232,19 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
     }
   }
 
-  async function stopRecording() {
-    const active = recorder.current;
-    if (!active || active.state !== "recording" || !item) {
-      setRecording(false);
-      return;
-    }
+  async function submitRecording(blob: Blob, mimeType: string, sampleRateHertz?: number) {
+    if (!item) return;
 
-    active.stop();
-    setRecording(false);
-    
-    // Give it a bit more time to flush buffers on mobile
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    
-    if (chunks.current.length === 0) {
-      setMessage("❌ 錄音失敗：未擷取到語音數據，請再試一次。");
-      return;
-    }
-
-    const blob = new Blob(chunks.current, { type: active.mimeType });
-    if (blob.size < 50) { // Lowered threshold
+    if (blob.size < 50) {
       setMessage("❌ 錄音時間太短，請按住不放直到說完。");
       return;
     }
 
     const form = new FormData();
-    form.append("audio", blob, "recording.audio");
+    form.append("audio", blob, `recording.${extensionForMimeType(mimeType)}`);
     form.append("expectedText", item.traditional_text);
+    form.append("mimeType", mimeType);
+    if (sampleRateHertz) form.append("sampleRateHertz", String(sampleRateHertz));
     const response = await fetch("/api/stt", { method: "POST", body: form });
     const result = await response.json();
 
@@ -186,6 +266,47 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
       await updateAttempt({ assessment_transcript: result.transcript, assessment_correct: result.correct });
       setMessage(result.correct ? `✅ 評估通過 ${scoreText}` : `❌ 答案未通過：${result.transcript || "未能辨識"} ${scoreText}`);
     }
+  }
+
+  async function stopRecording() {
+    const pcmActive = pcmRecorder.current;
+    if (pcmActive) {
+      pcmRecorder.current = null;
+      setRecording(false);
+      pcmActive.processor.disconnect();
+      pcmActive.source.disconnect();
+      pcmActive.stream.getTracks().forEach((track) => track.stop());
+      void pcmActive.context.close();
+
+      if (pcmActive.chunks.length === 0) {
+        setMessage("❌ 錄音失敗：未擷取到語音數據，請再試一次。");
+        return;
+      }
+
+      const blob = encodeWav(mergeAudioChunks(pcmActive.chunks), pcmActive.sampleRate);
+      await submitRecording(blob, "audio/wav", pcmActive.sampleRate);
+      return;
+    }
+
+    const active = recorder.current;
+    if (!active || active.state !== "recording") {
+      setRecording(false);
+      return;
+    }
+
+    active.stop();
+    setRecording(false);
+
+    // Give it a bit more time to flush buffers on mobile.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    if (chunks.current.length === 0) {
+      setMessage("❌ 錄音失敗：未擷取到語音數據，請再試一次。");
+      return;
+    }
+
+    const mimeType = active.mimeType || chunks.current[0]?.type || "audio/webm";
+    await submitRecording(new Blob(chunks.current, { type: mimeType }), mimeType, 48000);
   }
 
   /* ─── self-assess (when Google STT not available) ─── */
@@ -349,6 +470,7 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
                   onPointerDown={startRecording}
                   onPointerUp={stopRecording}
                   onPointerLeave={recording ? stopRecording : undefined}
+                  onPointerCancel={recording ? stopRecording : undefined}
                   onContextMenu={(e) => e.preventDefault()}
                   style={{ WebkitUserSelect: "none", WebkitTouchCallout: "none" }}
                   className={`mt-4 inline-flex h-14 w-full items-center justify-center gap-2 rounded-xl font-black select-none touch-none transition-all ${

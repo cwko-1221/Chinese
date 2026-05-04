@@ -31,7 +31,6 @@ async function postJson(url: string, body?: unknown) {
 function useCountUp(target: number, duration = 600) {
   const [value, setValue] = useState(0);
   useEffect(() => {
-    if (target === 0) { setValue(0); return; }
     const start = performance.now();
     let raf: number;
     function tick(now: number) {

@@ -14,12 +14,17 @@ export async function POST(request: Request) {
     const form = await request.formData();
     const file = form.get("audio");
     const expectedText = String(form.get("expectedText") ?? "");
+    const mimeType = String(form.get("mimeType") ?? "");
+    const sampleRateValue = Number(form.get("sampleRateHertz") ?? 0);
     if (!(file instanceof File) || !expectedText) {
       throw new Error("Audio and expectedText are required.");
     }
 
     const audio = Buffer.from(await file.arrayBuffer());
-    const result = await transcribeCantonese(audio, expectedText);
+    const result = await transcribeCantonese(audio, expectedText, {
+      mimeType: mimeType || file.type || "audio/webm",
+      sampleRateHertz: Number.isFinite(sampleRateValue) ? sampleRateValue : undefined,
+    });
     return NextResponse.json(result);
   } catch (error) {
     console.error("STT ERROR CAUGHT:", error);
