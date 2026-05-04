@@ -123,10 +123,14 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
       recorder.current = new MediaRecorder(stream, options);
       
       recorder.current.ondataavailable = (event) => {
-        if (event.data.size > 0) chunks.current.push(event.data);
+        if (event.data && event.data.size > 0) {
+          chunks.current.push(event.data);
+        }
       };
       recorder.current.onstop = () => stream.getTracks().forEach((track) => track.stop());
-      recorder.current.start();
+      
+      // Start with a timeslice to ensure data is captured regularly
+      recorder.current.start(100); 
       setRecording(true);
     } catch (error) {
       console.error("Recording error:", error);
@@ -136,21 +140,25 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
 
   async function stopRecording() {
     const active = recorder.current;
-    if (!active || !item) return;
+    if (!active || active.state !== "recording" || !item) {
+      setRecording(false);
+      return;
+    }
+
     active.stop();
     setRecording(false);
     
-    // Wait slightly for the last chunks
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // Give it a bit more time to flush buffers on mobile
+    await new Promise((resolve) => setTimeout(resolve, 500));
     
     if (chunks.current.length === 0) {
-      setMessage("❌ 錄音失敗：未擷取到語音數據。");
+      setMessage("❌ 錄音失敗：未擷取到語音數據，請再試一次。");
       return;
     }
 
     const blob = new Blob(chunks.current, { type: active.mimeType });
-    if (blob.size < 100) {
-      setMessage("❌ 錄音時間太短，請按住說話。");
+    if (blob.size < 50) { // Lowered threshold
+      setMessage("❌ 錄音時間太短，請按住不放直到說完。");
       return;
     }
 
