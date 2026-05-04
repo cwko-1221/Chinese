@@ -314,7 +314,10 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
                 <button
                   onPointerDown={startRecording}
                   onPointerUp={stopRecording}
-                  className={`mt-4 inline-flex h-14 w-full items-center justify-center gap-2 rounded-xl font-black transition-all ${
+                  onPointerLeave={recording ? stopRecording : undefined}
+                  onContextMenu={(e) => e.preventDefault()}
+                  style={{ WebkitUserSelect: "none", WebkitTouchCallout: "none" }}
+                  className={`mt-4 inline-flex h-14 w-full items-center justify-center gap-2 rounded-xl font-black select-none touch-none transition-all ${
                     recording
                       ? "bg-rose-500 scale-[1.02] shadow-lg shadow-rose-500/30"
                       : "bg-rose-600 hover:bg-rose-500"
