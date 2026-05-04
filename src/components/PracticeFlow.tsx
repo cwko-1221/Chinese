@@ -145,12 +145,13 @@ export default function PracticeFlow({ assignmentId }: { assignmentId: string; u
       setMessage(result.error || "語音辨識失敗");
       return;
     }
+    const scoreText = typeof result.score === "number" ? `相似度：${result.score}%` : "";
     if (phase === "practice") {
       await updateAttempt({ speech_transcript: result.transcript, speech_correct: result.correct });
-      setMessage(result.correct ? "✅ 讀音通過" : `❌ 請再試一次：${result.transcript || "未能辨識"}`);
+      setMessage(result.correct ? `✅ 讀音通過 ${scoreText}` : `❌ 請再試一次：${result.transcript || "未能辨識"} ${scoreText}`);
     } else {
       await updateAttempt({ assessment_transcript: result.transcript, assessment_correct: result.correct });
-      setMessage(result.correct ? "✅ 評估通過" : `❌ 答案未通過：${result.transcript || "未能辨識"}`);
+      setMessage(result.correct ? `✅ 評估通過 ${scoreText}` : `❌ 答案未通過：${result.transcript || "未能辨識"} ${scoreText}`);
     }
   }
 
